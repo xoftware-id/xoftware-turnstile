@@ -98,7 +98,6 @@ func main() {
 	})
 
 	fmt.Printf("🚀 Fortress Turnstile running on %s\n", SERVER_PORT)
-	fmt.Printf("🔒 Difficulty: %d | Secret Key Loaded: %v\n", POW_DIFFICULTY, len(HMAC_SECRET_KEY) > 0)
 	log.Fatal(http.ListenAndServe(SERVER_PORT, c.Handler(mux)))
 }
 
@@ -135,10 +134,6 @@ func isSuspiciousRequest(r *http.Request) bool {
 	if r.Header.Get("Accept-Language") == "" {
 		return true
 	}
-	if r.Header.Get("Headless") != "" {
-		return true
-	}
-
 	return false
 }
 
@@ -170,6 +165,7 @@ func handleVerifySolution(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+
 	mac := hmac.New(sha256.New, []byte(HMAC_SECRET_KEY))
 	mac.Write([]byte(fmt.Sprintf("%s:%d:%s", req.Challenge, req.ExpiresAt, req.Obfuscator)))
 	expectedSig := hex.EncodeToString(mac.Sum(nil))
@@ -187,11 +183,13 @@ func handleVerifySolution(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Invalid signature"})
 		return
 	}
+
 	if time.Now().Unix() > req.ExpiresAt {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Challenge expired"})
 		return
 	}
+
 	mu.Lock()
 	if usedChallenges[req.Challenge] {
 		mu.Unlock()
@@ -201,11 +199,12 @@ func handleVerifySolution(w http.ResponseWriter, r *http.Request) {
 	}
 	usedChallenges[req.Challenge] = true
 	mu.Unlock()
+
 	isServerSuspicious := isSuspiciousRequest(r)
 	if isServerSuspicious {
 		if !req.UserInteracted {
 			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Verification requires human interaction (Click Required)"})
+			json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Verification requires human interaction"})
 			return
 		}
 		log.Printf("WARNING: Request passed with suspicious UA but provided interaction: %s", r.UserAgent())
@@ -213,14 +212,16 @@ func handleVerifySolution(w http.ResponseWriter, r *http.Request) {
 
 	if len(req.CanvasData) < 10 {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Browser check failed (Canvas)"})
+		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Browser check failed"})
 		return
 	}
+
 	if req.SecurityPayload == "devtools_detected" {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Environment insecure (DevTools detected)"})
 		return
 	}
+
 	data := fmt.Sprintf("%s%s%s%s%s", req.Challenge, req.Nonce, req.Origin, req.Fingerprint, req.CanvasData[:10])
 	hash := sha256.Sum256([]byte(data))
 	hashHex := hex.EncodeToString(hash[:])
@@ -231,6 +232,7 @@ func handleVerifySolution(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Invalid Proof of Work"})
 		return
 	}
+
 	claims := jwt.MapClaims{
 		"iss":  ISSUER_NAME,
 		"orig": req.Origin,
