@@ -43,14 +43,16 @@ type ChallengeResponse struct {
 }
 
 type SolutionRequest struct {
-	Challenge   string `json:"challenge"`
-	Nonce       string `json:"nonce"`
-	Origin      string `json:"origin"`
-	Fingerprint string `json:"fingerprint"`
-	Signature   string `json:"signature"`
-	ExpiresAt   int64  `json:"expires_at"`
-	CanvasData  string `json:"canvas_data"`
-	Obfuscator  string `json:"obfuscator,omitempty"`
+	Challenge       string `json:"challenge"`
+	Nonce           string `json:"nonce"`
+	Origin          string `json:"origin"`
+	Fingerprint     string `json:"fingerprint"`
+	Signature       string `json:"signature"`
+	ExpiresAt       int64  `json:"expires_at"`
+	CanvasData      string `json:"canvas_data"`
+	Obfuscator      string `json:"obfuscator,omitempty"`
+	UserInteracted  bool   `json:"user_interacted"`
+	SecurityPayload string `json:"security_payload"`
 }
 
 type ApiResponse struct {
@@ -91,7 +93,7 @@ func main() {
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "X-Requested-With"},
+		AllowedHeaders:   []string{"Content-Type", "X-Requested-With", "X-Security-Check"},
 		AllowCredentials: false,
 	})
 
@@ -120,6 +122,24 @@ func generateObfuscator() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func isSuspiciousRequest(r *http.Request) bool {
+	ua := strings.ToLower(r.UserAgent())
+	badKeywords := []string{"headless", "puppeteer", "selenium", "phantomjs", "webdriver", "bot", "crawl", "spider", "curl", "python", "java", "okhttp"}
+	for _, kw := range badKeywords {
+		if strings.Contains(ua, kw) {
+			return true
+		}
+	}
+	if r.Header.Get("Accept-Language") == "" {
+		return true
+	}
+	if r.Header.Get("Headless") != "" {
+		return true
+	}
+
+	return false
 }
 
 func handleGetChallenge(w http.ResponseWriter, r *http.Request) {
@@ -181,9 +201,24 @@ func handleVerifySolution(w http.ResponseWriter, r *http.Request) {
 	}
 	usedChallenges[req.Challenge] = true
 	mu.Unlock()
+	isServerSuspicious := isSuspiciousRequest(r)
+	if isServerSuspicious {
+		if !req.UserInteracted {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Verification requires human interaction (Click Required)"})
+			return
+		}
+		log.Printf("WARNING: Request passed with suspicious UA but provided interaction: %s", r.UserAgent())
+	}
+
 	if len(req.CanvasData) < 10 {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Browser check failed"})
+		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Browser check failed (Canvas)"})
+		return
+	}
+	if req.SecurityPayload == "devtools_detected" {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(ApiResponse{Success: false, Error: "Environment insecure (DevTools detected)"})
 		return
 	}
 	data := fmt.Sprintf("%s%s%s%s%s", req.Challenge, req.Nonce, req.Origin, req.Fingerprint, req.CanvasData[:10])
